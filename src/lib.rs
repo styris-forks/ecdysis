@@ -29,7 +29,7 @@ use socket2::Socket;
 #[cfg(feature = "tokio_ecdysis")]
 pub use {crate::seqpacket::UnixSeqpacketListenerStream, tokio_seqpacket::UnixSeqpacketListener};
 
-use executioner::{upgrade, UpgradeFinished};
+use executioner::{upgrade, upgrade_to, UpgradeFinished};
 use inheriter::{init_child, InheritError};
 use registry::{ListenerRegistry, SockInfo};
 
@@ -147,6 +147,20 @@ impl Ecdysis {
         let fds = self.registry.get_fds_for_child();
         log::warn!("Ecdysis starting upgrade");
         upgrade(fds).map_err(|e| {
+            log::warn!("Upgrade failed! - {e}");
+            let _ = self.write_pidfile();
+            e
+        })
+    }
+
+    /// Like [`Ecdysis::upgrade`], but exec `exec` for the child instead of re-running the current
+    /// executable (argv[0]). The child still inherits the same sockets, environment, and arguments;
+    /// only the binary that is launched differs. This is what enables an actual binary swap (e.g.
+    /// booting a freshly staged update) rather than only recycling the running binary.
+    pub fn upgrade_to<P: AsRef<Path>>(&self, exec: P) -> UpgradeFinished {
+        let fds = self.registry.get_fds_for_child();
+        log::warn!("Ecdysis starting upgrade to {:?}", exec.as_ref());
+        upgrade_to(fds, exec.as_ref().to_path_buf()).map_err(|e| {
             log::warn!("Upgrade failed! - {e}");
             let _ = self.write_pidfile();
             e

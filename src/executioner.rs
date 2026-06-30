@@ -2,6 +2,7 @@ use std::{
     env,
     io::{Error, Read},
     os::unix::{io::AsRawFd, process::CommandExt},
+    path::PathBuf,
     process::{Child, Command},
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -38,6 +39,14 @@ pub enum UpgradeError {
 }
 
 pub fn upgrade(fds: Vec<ListenerInfo>) -> UpgradeFinished {
+    upgrade_inner(fds, None)
+}
+
+pub fn upgrade_to(fds: Vec<ListenerInfo>, exec: PathBuf) -> UpgradeFinished {
+    upgrade_inner(fds, Some(exec))
+}
+
+fn upgrade_inner(fds: Vec<ListenerInfo>, exec_override: Option<PathBuf>) -> UpgradeFinished {
     // Equivalent to .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err()
     if UPGRADING.swap(true, Ordering::Acquire) {
         return Err(UpgradeError::NotStarted(String::from("Already in upgrade")));
@@ -45,7 +54,7 @@ pub fn upgrade(fds: Vec<ListenerInfo>) -> UpgradeFinished {
 
     log::debug!("In child, inherited files should be:\n {:?}", fds);
     let pipes = UpgradePipes::new()?;
-    let child = exec_upgraded(&pipes.fds, fds.clone())?;
+    let child = exec_upgraded(&pipes.fds, fds.clone(), exec_override)?;
     let (recv_ready, send_listeners) = pipes.take_pipes();
 
     let send = send_fds(send_listeners, fds);
@@ -208,9 +217,14 @@ fn wait_ready(mut recv_ready: os_pipe::PipeReader) -> thread::JoinHandle<Upgrade
 
 // Helpers
 // Setup environment and launch the upgraded process
-fn exec_upgraded(pipe_fds: &FdPair, inherit_fds: Vec<ListenerInfo>) -> Result<Child, Error> {
+fn exec_upgraded(
+    pipe_fds: &FdPair,
+    inherit_fds: Vec<ListenerInfo>,
+    exec_override: Option<PathBuf>,
+) -> Result<Child, Error> {
     let mut run_args: Vec<String> = env::args().collect();
-    let cmdline = run_args.remove(0);
+    let argv0 = run_args.remove(0);
+    let cmdline = exec_override.unwrap_or_else(|| PathBuf::from(argv0));
     let cwd = env::current_dir()?;
 
     let mut cmd = Command::new(cmdline);
