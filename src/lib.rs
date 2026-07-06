@@ -281,6 +281,14 @@ impl Ecdysis {
         Ok(listener)
     }
 
+    /// Deregister and close the registry's duplicate of a TCP listener previously created via
+    /// `listen_tcp`/`build_listen_tcp`, so it is neither kept alive nor passed to an upgrade
+    /// child. The caller must also drop its own `TcpListener` clone for the socket to actually
+    /// close and the port to stop accepting connections.
+    pub fn unlisten_tcp(&self, addr: SocketAddr) {
+        self.registry.remove_used(&SockInfo::Tcp(addr));
+    }
+
     /// Create a UdpSocket bound to `addr`. The closure `sock_build` must accept a
     /// socket2::Socket and return a configured UdpSocket. In an upgrade, this will return a
     /// UdpSocket bound to the same socket as in the parent. If the parent wasn't using this

@@ -97,6 +97,16 @@ impl ListenerRegistry {
         Ok(())
     }
 
+    pub(crate) fn remove_used(&self, sock_info: &SockInfo) {
+        let mut fds = self
+            .used_fds
+            .lock()
+            .expect("Cannot take lock on FdRegisry!");
+        if let Some(p) = fds.iter().position(|li| &li.sock_info == sock_info) {
+            close_fd_quiet(fds.remove(p).fd);
+        }
+    }
+
     pub(crate) fn close_used(&self) {
         let mut fds = self
             .used_fds
