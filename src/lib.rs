@@ -130,8 +130,6 @@ impl Ecdysis {
     /// in the child, the parent will eventually timeout and kill the child on the assumption that
     /// something is broken in the child.
     pub fn ready(&mut self) -> io::Result<()> {
-        self.registry.close_inherited();
-
         let _ = self.write_pidfile();
 
         if let Some(mut notifier) = self.ready_notifier.take() {
@@ -139,6 +137,28 @@ impl Ecdysis {
         } else {
             Ok(())
         }
+    }
+
+    /// Close every inherited listener socket this process has not claimed via a `listen_*` /
+    /// `build_*` method. `ready` does not do this implicitly: an upgrade child may declare
+    /// readiness before it has claimed its listeners (for example, as soon as it has validated
+    /// its on-disk state), and the inherited sockets must survive until the claim phase runs.
+    /// Call this once every listener has been claimed; sockets left unclaimed would otherwise
+    /// stay bound for the lifetime of this process with nothing accepting on them.
+    pub fn close_inherited(&self) {
+        self.registry.close_inherited();
+    }
+
+    /// Report a fatal startup error to the parent in place of `ready`: the parent surfaces the
+    /// message as the upgrade failure instead of a generic child exit, discards the staged
+    /// binary, and keeps serving on the current one. No-op when not an upgrade child or when
+    /// `ready` has already been declared.
+    pub fn fail(&mut self, message: &str) -> io::Result<()> {
+        if let Some(mut notifier) = self.ready_notifier.take() {
+            notifier.write_all(b"ERR")?;
+            notifier.write_all(message.as_bytes())?;
+        }
+        Ok(())
     }
 
     /// Begin the upgrade procedure. The process that calls upgrade becomes the parent, and sets

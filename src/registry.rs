@@ -118,7 +118,7 @@ impl ListenerRegistry {
         fds.clear();
     }
 
-    pub(crate) fn close_inherited(&mut self) {
+    pub(crate) fn close_inherited(&self) {
         let mut fds = self
             .inherited_fds
             .lock()

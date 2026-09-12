@@ -27,6 +27,9 @@ pub enum UpgradeError {
     #[display("child exited unexpectedly")]
     ChildExit,
 
+    #[display("child failed: {}", _0)]
+    ChildFailed(String),
+
     #[display("timed out waiting for ready signal from child")]
     ChildTimeout,
 
@@ -76,9 +79,13 @@ fn upgrade_inner(fds: Vec<ListenerInfo>, exec_override: Option<PathBuf>) -> Upgr
     match waitc.join() {
         Ok(Ok(())) => (), // child still running
         Ok(Err(e)) => {
-            res = Err(e); // child exited or a timeout happened, this gives us which
-                          // even if the child declared ready, overwrite that, because the child
-                          // exited if this arm is running.
+            // A failure the child reported through the ready pipe is the specific cause;
+            // keep it even though the child also exited (or timed out) right after.
+            if !matches!(res, Err(UpgradeError::ChildFailed(_))) {
+                res = Err(e); // child exited or a timeout happened, this gives us which
+                              // even if the child declared ready, overwrite that, because the
+                              // child exited if this arm is running.
+            }
         }
         Err(_) => panic!("Thread error in upgrade!"),
     }
@@ -203,13 +210,32 @@ fn proc_wait(child: &mut Child) -> UpgradeFinished {
     }
 }
 
-// Wait for the child to declare itself ready.
+// Wait for the child to declare itself ready. "OK" is success; "ERR" followed by a message
+// (written by `Ecdysis::fail` before the child exits) is a reported failure; anything else,
+// including silence, is an unexpected child exit.
 fn wait_ready(mut recv_ready: os_pipe::PipeReader) -> thread::JoinHandle<UpgradeFinished> {
     thread::spawn(move || -> UpgradeFinished {
-        let mut buf = [0; 2];
-
-        if recv_ready.read_exact(&mut buf).is_ok() && &buf == b"OK" {
-            return Ok(());
+        const CAP: usize = 64 * 1024;
+        let mut buf = Vec::with_capacity(32);
+        loop {
+            let mut chunk = [0u8; 4096];
+            match recv_ready.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.starts_with(b"OK") {
+                        return Ok(());
+                    }
+                    if buf.len() > CAP {
+                        break;
+                    }
+                }
+                Err(_) => return Err(UpgradeError::ChildExit),
+            }
+        }
+        if buf.starts_with(b"ERR") {
+            let message = String::from_utf8_lossy(&buf[3..]).trim().to_string();
+            return Err(UpgradeError::ChildFailed(message));
         }
         Err(UpgradeError::ChildExit)
     })
