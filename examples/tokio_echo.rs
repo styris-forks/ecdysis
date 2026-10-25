@@ -77,7 +77,8 @@ async fn main() {
         log::info!("echo server child started (PID: {pid}; reload count: {reload_count})");
     }
 
-    let mut ecdysis_builder = TokioEcdysisBuilder::new(SignalKind::hangup()).unwrap();
+    let mut ecdysis_builder =
+        TokioEcdysisBuilder::new(SignalKind::hangup(), Duration::from_secs(5)).unwrap();
     ecdysis_builder
         .stop_on_signal(SignalKind::user_defined1())
         .unwrap();

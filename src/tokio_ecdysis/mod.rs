@@ -1,7 +1,5 @@
 //! Tokio wrappers for Ecdysis
 
-#[cfg(feature = "systemd_notify")]
-use std::time::Duration;
 use std::{
     future::Future,
     io, mem,
@@ -11,6 +9,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
     thread,
+    time::Duration,
 };
 
 #[cfg(feature = "systemd_sockets")]
@@ -91,6 +90,7 @@ pub(crate) enum ExitCondition {
 pub struct TokioEcdysisBuilder {
     tokio_ecdysis: TokioEcdysis,
     triggers: Vec<(Trigger, ExitCondition)>,
+    ready_timeout: Duration,
     #[cfg(feature = "systemd_notify")]
     systemd_notifier: Option<SystemdNotifier>,
 }
@@ -106,7 +106,9 @@ impl Deref for TokioEcdysisBuilder {
 }
 
 impl TokioEcdysisBuilder {
-    pub fn new(upgrade_signal_kind: SignalKind) -> io::Result<Self> {
+    /// `ready_timeout` bounds how long an upgrade waits for the child to call `ready`; see
+    /// [`Ecdysis::upgrade`].
+    pub fn new(upgrade_signal_kind: SignalKind, ready_timeout: Duration) -> io::Result<Self> {
         let triggers: Vec<(Trigger, ExitCondition)> = vec![(
             Trigger::Signal(
                 upgrade_signal_kind,
@@ -118,6 +120,7 @@ impl TokioEcdysisBuilder {
         Ok(Self {
             tokio_ecdysis: TokioEcdysis::new(),
             triggers,
+            ready_timeout,
             #[cfg(feature = "systemd_notify")]
             systemd_notifier: None,
         })
@@ -250,6 +253,7 @@ impl TokioEcdysisBuilder {
         let Self {
             mut tokio_ecdysis,
             triggers,
+            ready_timeout,
             #[cfg(feature = "systemd_notify")]
             systemd_notifier,
         } = self;
@@ -261,6 +265,7 @@ impl TokioEcdysisBuilder {
         let upgrader = TokioEcdysisUpgrader {
             tokio_ecdysis: tokio_ecdysis_arc.clone(),
             triggers,
+            ready_timeout,
             #[cfg(feature = "systemd_notify")]
             systemd_notifier,
         };
@@ -685,6 +690,7 @@ pub type TokioEcdysisUpgradeResult = Result<(ExitMode, ExitReason), String>;
 struct TokioEcdysisUpgrader {
     tokio_ecdysis: Arc<TokioEcdysis>,
     triggers: Vec<(Trigger, ExitCondition)>,
+    ready_timeout: Duration,
     #[cfg(feature = "systemd_notify")]
     systemd_notifier: Option<SystemdNotifier>,
 }
@@ -715,9 +721,10 @@ impl TokioEcdysisUpgrader {
 
         let (tx, rx) = channel();
         let fds = self.tokio_ecdysis.inner.registry.get_fds_for_child();
+        let ready_timeout = self.ready_timeout;
         log::warn!("Ecdysis starting upgrade");
         thread::spawn(move || {
-            if let Err(e) = tx.send(upgrade(fds)) {
+            if let Err(e) = tx.send(upgrade(fds, ready_timeout)) {
                 panic!(
                     "Cannot send upgrade result{}",
                     e.map_or_else(|e| format!(": {e}"), |()| "!".into())

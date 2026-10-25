@@ -41,15 +41,23 @@ pub enum UpgradeError {
     SerializationError(bincode::Error), //TODO: grr, figure out bincode error
 }
 
-pub fn upgrade(fds: Vec<ListenerInfo>) -> UpgradeFinished {
-    upgrade_inner(fds, None)
+pub fn upgrade(fds: Vec<ListenerInfo>, ready_timeout: Duration) -> UpgradeFinished {
+    upgrade_inner(fds, None, ready_timeout)
 }
 
-pub fn upgrade_to(fds: Vec<ListenerInfo>, exec: PathBuf) -> UpgradeFinished {
-    upgrade_inner(fds, Some(exec))
+pub fn upgrade_to(
+    fds: Vec<ListenerInfo>,
+    exec: PathBuf,
+    ready_timeout: Duration,
+) -> UpgradeFinished {
+    upgrade_inner(fds, Some(exec), ready_timeout)
 }
 
-fn upgrade_inner(fds: Vec<ListenerInfo>, exec_override: Option<PathBuf>) -> UpgradeFinished {
+fn upgrade_inner(
+    fds: Vec<ListenerInfo>,
+    exec_override: Option<PathBuf>,
+    ready_timeout: Duration,
+) -> UpgradeFinished {
     // Equivalent to .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err()
     if UPGRADING.swap(true, Ordering::Acquire) {
         return Err(UpgradeError::NotStarted(String::from("Already in upgrade")));
@@ -61,7 +69,7 @@ fn upgrade_inner(fds: Vec<ListenerInfo>, exec_override: Option<PathBuf>) -> Upgr
     let (recv_ready, send_listeners) = pipes.take_pipes();
 
     let send = send_fds(send_listeners, fds);
-    let waitc = wait_child(child);
+    let waitc = wait_child(child, ready_timeout);
     let waitr = wait_ready(recv_ready);
 
     // The waitr thread is the arbiter of "moving on". It will
@@ -175,18 +183,15 @@ fn send_fds(
     })
 }
 
-// Check that the child is still running for 5 seconds after launch. If the child
+// Check that the child is still running for `ready_timeout` after launch. If the child
 // exits or the there is a timeout, exit the thread. In the case of a timeout, kill the child
 // before exiting. Thread exits successfully if neither of those conditions have been met when
 // the spawning thread sets UPGRADING to false.
-//
-// TODO: timeout param
-fn wait_child(mut child: Child) -> thread::JoinHandle<UpgradeFinished> {
+fn wait_child(mut child: Child, ready_timeout: Duration) -> thread::JoinHandle<UpgradeFinished> {
     thread::spawn(move || {
         let start = Instant::now();
-        let timeout = Duration::from_secs(5);
 
-        while start.elapsed() < timeout {
+        while start.elapsed() < ready_timeout {
             thread::sleep(Duration::from_millis(500));
 
             proc_wait(&mut child)?;

@@ -22,6 +22,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::exit,
+    time::Duration,
 };
 
 use socket2::Socket;
@@ -163,10 +164,14 @@ impl Ecdysis {
 
     /// Begin the upgrade procedure. The process that calls upgrade becomes the parent, and sets
     /// up, then executes the fork/exec to start the child process.
-    pub fn upgrade(&self) -> UpgradeFinished {
+    ///
+    /// The child must call `ready` within `ready_timeout` of being launched, or the parent kills
+    /// it and the upgrade fails with `UpgradeError::ChildTimeout`.
+    /// Size it to the child's worst-case startup up to `ready`, including cold disk caches.
+    pub fn upgrade(&self, ready_timeout: Duration) -> UpgradeFinished {
         let fds = self.registry.get_fds_for_child();
         log::warn!("Ecdysis starting upgrade");
-        upgrade(fds).map_err(|e| {
+        upgrade(fds, ready_timeout).map_err(|e| {
             log::warn!("Upgrade failed! - {e}");
             let _ = self.write_pidfile();
             e
@@ -177,10 +182,10 @@ impl Ecdysis {
     /// executable (argv[0]). The child still inherits the same sockets, environment, and arguments;
     /// only the binary that is launched differs. This is what enables an actual binary swap (e.g.
     /// booting a freshly staged update) rather than only recycling the running binary.
-    pub fn upgrade_to<P: AsRef<Path>>(&self, exec: P) -> UpgradeFinished {
+    pub fn upgrade_to<P: AsRef<Path>>(&self, exec: P, ready_timeout: Duration) -> UpgradeFinished {
         let fds = self.registry.get_fds_for_child();
         log::warn!("Ecdysis starting upgrade to {:?}", exec.as_ref());
-        upgrade_to(fds, exec.as_ref().to_path_buf()).map_err(|e| {
+        upgrade_to(fds, exec.as_ref().to_path_buf(), ready_timeout).map_err(|e| {
             log::warn!("Upgrade failed! - {e}");
             let _ = self.write_pidfile();
             e
